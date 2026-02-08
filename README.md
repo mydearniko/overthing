@@ -15,7 +15,7 @@ This package allows you to connect two endpoints (behind NATs or firewalls) by u
 ## Installation
 
 ```bash
-go get github.com/yourusername/tunnel
+go get github.com/mydearniko/tunnel
 ```
 
 ## Quick Start
@@ -27,6 +27,7 @@ go run examples/server/main.go
 ```
 
 **Output:**
+
 ```text
 RELAY TUNNEL SERVER
 -------------------
@@ -38,6 +39,7 @@ RELAY TUNNEL SERVER
 ```
 
 The Server generates a **Device ID with Hint**. This 51-character string contains:
+
 - **First 43 chars**: The cryptographic identity (Base63 encoded SHA-256 of certificate)
 - **Last 8 chars**: The relay IP:Port hint (Base63 encoded)
 
@@ -51,6 +53,7 @@ go run examples/client/main.go <DEVICE-ID>
 ```
 
 **Client Connection Logic:**
+
 1. **Extract Hint**: If the ID is 51 chars, extract the embedded relay IP:Port
 2. **Direct Connect**: Try to connect to the hinted relay immediately
 3. **Fallback**: If that relay fails or doesn't know the server, scan all relays
@@ -58,12 +61,12 @@ go run examples/client/main.go <DEVICE-ID>
 
 ## Device ID Formats
 
-| Format | Length | Description |
-|--------|--------|-------------|
-| Compact | 43 chars | Base63 encoded identity only |
-| Compact + Hint | 51 chars | Identity + 8-char relay hint |
-| Standard | 56 chars | Syncthing-compatible with Luhn checksums |
-| Standard + Hint | 66 chars | Standard + 10-char Base32 relay hint |
+| Format          | Length   | Description                              |
+| --------------- | -------- | ---------------------------------------- |
+| Compact         | 43 chars | Base63 encoded identity only             |
+| Compact + Hint  | 51 chars | Identity + 8-char relay hint             |
+| Standard        | 56 chars | Syncthing-compatible with Luhn checksums |
+| Standard + Hint | 66 chars | Standard + 10-char Base32 relay hint     |
 
 The library automatically detects and handles all formats.
 
@@ -84,7 +87,7 @@ func main() {
 
     cfg := tunnel.ServerConfig{
         Identity:    identity,
-        ForwardAddr: "127.0.0.1:8080", 
+        ForwardAddr: "127.0.0.1:8080",
         OnRelayJoined: func(relayAddr, deviceIDWithHint string) {
             // deviceIDWithHint is 51 chars (43 + 8 hint)
             fmt.Printf("Share this ID: %s\n", deviceIDWithHint)
@@ -112,7 +115,7 @@ func main() {
     cfg := tunnel.ClientConfig{
         Identity:   identity,
         TargetID:   "DEVICE-ID-WITH-HINT", // Paste the 51-char ID here
-        ListenAddr: "127.0.0.1:2222", 
+        ListenAddr: "127.0.0.1:2222",
     }
 
     // The client will:
