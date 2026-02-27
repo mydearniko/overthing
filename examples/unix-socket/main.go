@@ -13,7 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"github.com/idanyas/overthing"
+	"github.com/mydearniko/overthing"
 )
 
 func main() {

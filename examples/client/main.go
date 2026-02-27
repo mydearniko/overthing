@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	tunnel "github.com/idanyas/overthing"
+	tunnel "github.com/mydearniko/overthing"
 )
 
 var (
@@ -66,7 +66,7 @@ ENVIRONMENT:
     NO_COLOR      Disable colored output
     FORCE_COLOR   Force colored output
 
-For more information: https://github.com/idanyas/overthing
+For more information: https://github.com/mydearniko/overthing
 `)
 	}
 	flag.Parse()

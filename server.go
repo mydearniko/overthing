@@ -16,9 +16,9 @@ import (
 
 	"github.com/hashicorp/yamux"
 
-	"github.com/idanyas/overthing/pkg/network"
-	"github.com/idanyas/overthing/pkg/protocol"
-	"github.com/idanyas/overthing/pkg/security"
+	"github.com/mydearniko/overthing/pkg/network"
+	"github.com/mydearniko/overthing/pkg/protocol"
+	"github.com/mydearniko/overthing/pkg/security"
 )
 
 type Server struct {

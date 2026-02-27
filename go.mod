@@ -1,4 +1,4 @@
-module github.com/idanyas/overthing
+module github.com/mydearniko/overthing
 
 go 1.21
 

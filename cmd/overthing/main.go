@@ -8,8 +8,8 @@ import (
 	"os/signal"
 	"path/filepath"
 
-	tunnel "github.com/idanyas/overthing"
-	"github.com/idanyas/overthing/pkg/logging"
+	tunnel "github.com/mydearniko/overthing"
+	"github.com/mydearniko/overthing/pkg/logging"
 )
 
 func main() {

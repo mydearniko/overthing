@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -13,12 +15,18 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/idanyas/overthing/pkg/security"
+	"github.com/mydearniko/overthing/pkg/security"
 )
 
 const (
 	// DiscoveryURL is the Syncthing relay discovery endpoint
 	DiscoveryURL = "https://relays.syncthing.net/endpoint/full"
+
+	// DiscoveryMirrorURL mirrors DiscoveryURL via this repository's mirror branch.
+	DiscoveryMirrorURL = "https://raw.githubusercontent.com/mydearniko/overthing/mirror/endpoint/full.json"
+
+	// DefaultDiscoveryRequestTimeout bounds a single discovery endpoint request.
+	DefaultDiscoveryRequestTimeout = 10 * time.Second
 
 	// DefaultMaxConcurrent is the default number of concurrent latency tests
 	DefaultMaxConcurrent = 200
@@ -155,14 +163,15 @@ var (
 	cacheValidFor   = 5 * time.Minute
 )
 
-// Discover fetches the list of available relays from the Syncthing endpoint
+// Discover fetches the list of available relays from the Syncthing endpoint,
+// falling back to this repository's mirror if the primary endpoint fails.
 func Discover(ctx context.Context, dialer Dialer) ([]Relay, error) {
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{}
 
 	// If a custom dialer is provided, inject it into the HTTP transport
 	if dialer != nil {
 		client.Transport = &http.Transport{
-			DialContext: dialer,
+			DialContext:           dialer,
 			ForceAttemptHTTP2:     true,
 			MaxIdleConns:          100,
 			IdleConnTimeout:       90 * time.Second,
@@ -171,29 +180,107 @@ func Discover(ctx context.Context, dialer Dialer) ([]Relay, error) {
 		}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "GET", DiscoveryURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+	return discoverFromURLs(ctx, client, []string{DiscoveryURL, DiscoveryMirrorURL})
+}
+
+func discoverFromURLs(ctx context.Context, client *http.Client, endpoints []string) ([]Relay, error) {
+	if client == nil {
+		client = &http.Client{}
 	}
-	req.Header.Set("User-Agent", "github.com/idanyas/overthing/1.0")
+	if len(endpoints) == 0 {
+		return nil, fmt.Errorf("no discovery endpoints configured")
+	}
+
+	var errs []error
+
+	for i, endpoint := range endpoints {
+		relays, err := discoverFromURL(ctx, client, endpoint, len(endpoints)-i)
+		if err == nil {
+			return relays, nil
+		}
+
+		errs = append(errs, err)
+
+		if ctx.Err() != nil {
+			break
+		}
+	}
+
+	return nil, fmt.Errorf("fetch relays from discovery endpoints: %w", errors.Join(errs...))
+}
+
+func discoverFromURL(ctx context.Context, client *http.Client, endpoint string, remainingEndpoints int) ([]Relay, error) {
+	attemptCtx := ctx
+	cancel := func() {}
+
+	if timeout := discoveryAttemptTimeout(ctx, remainingEndpoints); timeout > 0 {
+		attemptCtx, cancel = context.WithTimeout(ctx, timeout)
+	}
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(attemptCtx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("%s: create request: %w", endpoint, err)
+	}
+	req.Header.Set("User-Agent", "github.com/mydearniko/overthing/1.0")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fetch relays: %w", err)
+		return nil, fmt.Errorf("%s: request failed: %w", endpoint, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status: %d", resp.StatusCode)
+		return nil, fmt.Errorf("%s: unexpected status: %d", endpoint, resp.StatusCode)
 	}
 
+	relays, err := decodeRelays(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("%s: decode response: %w", endpoint, err)
+	}
+	if len(relays) == 0 {
+		return nil, fmt.Errorf("%s: no relays in response", endpoint)
+	}
+
+	return relays, nil
+}
+
+func discoveryAttemptTimeout(ctx context.Context, remainingEndpoints int) time.Duration {
+	if remainingEndpoints < 1 {
+		remainingEndpoints = 1
+	}
+
+	timeout := DefaultDiscoveryRequestTimeout
+
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return timeout
+	}
+
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return 0
+	}
+
+	split := remaining / time.Duration(remainingEndpoints)
+	if split <= 0 {
+		split = remaining
+	}
+	if split < timeout {
+		timeout = split
+	}
+
+	return timeout
+}
+
+func decodeRelays(r io.Reader) ([]Relay, error) {
 	// The endpoint returns: { "key": [ {url: "..."}, ... ], ... }
 	var data map[string][]struct {
 		URL string `json:"url"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
+	if err := json.NewDecoder(r).Decode(&data); err != nil {
+		return nil, err
 	}
 
 	var relays []Relay

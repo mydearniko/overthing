@@ -10,8 +10,8 @@ import (
 
 	"github.com/hashicorp/yamux"
 
-	"github.com/idanyas/overthing/pkg/relay"
-	"github.com/idanyas/overthing/pkg/security"
+	"github.com/mydearniko/overthing/pkg/relay"
+	"github.com/mydearniko/overthing/pkg/security"
 )
 
 func parseRelayURI(uri string) (addr string, deviceID string, err error) {

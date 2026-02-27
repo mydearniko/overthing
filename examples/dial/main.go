@@ -10,7 +10,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/idanyas/overthing"
+	"github.com/mydearniko/overthing"
 )
 
 func main() {

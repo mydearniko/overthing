@@ -13,7 +13,7 @@ import (
 	"os/signal"
 	"time"
 
-	tunnel "github.com/idanyas/overthing"
+	tunnel "github.com/mydearniko/overthing"
 )
 
 func main() {

@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/idanyas/overthing"
+	"github.com/mydearniko/overthing"
 )
 
 func main() {

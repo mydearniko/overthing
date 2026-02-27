@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/idanyas/overthing/pkg/relay"
+	"github.com/mydearniko/overthing/pkg/relay"
 )
 
 func main() {

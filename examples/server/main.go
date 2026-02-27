@@ -15,7 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/idanyas/overthing"
+	"github.com/mydearniko/overthing"
 )
 
 var (
@@ -75,7 +75,7 @@ IDENTITY:
     Share the "ID with Hint" with clients for instant connections.
     The "Persistent ID" works even if the relay changes.
 
-For more information: https://github.com/idanyas/overthing
+For more information: https://github.com/mydearniko/overthing
 `)
 	}
 	flag.Parse()
