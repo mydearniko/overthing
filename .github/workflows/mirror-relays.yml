@@ -1,0 +1,97 @@
+name: Mirror Syncthing relay endpoint
+
+on:
+  workflow_dispatch:
+  schedule:
+    # GitHub Actions does not allow schedules more often than every 5 minutes.
+    # GitHub also documents higher scheduler load at the top of the hour, so this
+    # starts at minute 2 instead of minute 0 to reduce the chance of delays.
+    - cron: "2/5 * * * *"
+
+permissions:
+  # Required so the workflow can force-push the generated mirror branch.
+  contents: write
+
+concurrency:
+  group: mirror-syncthing-relays
+  cancel-in-progress: true
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SOURCE_URL: https://relays.syncthing.net/endpoint/full
+      MIRROR_BRANCH: mirror
+      MIRROR_FILE: endpoint/full.json
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Fetch endpoint and update mirror branch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          workdir="${RUNNER_TEMP}/mirror-relays"
+          mkdir -p "${workdir}"
+
+          new_file="${workdir}/$(basename "${MIRROR_FILE}")"
+          current_file="${workdir}/current-$(basename "${MIRROR_FILE}")"
+
+          curl --fail --silent --show-error --location \
+            --retry 3 \
+            --retry-delay 5 \
+            --output "${new_file}" \
+            "${SOURCE_URL}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git fetch --depth=1 origin "${MIRROR_BRANCH}:refs/remotes/origin/${MIRROR_BRANCH}" 2>/dev/null; then
+            if git show "origin/${MIRROR_BRANCH}:${MIRROR_FILE}" > "${current_file}" 2>/dev/null; then
+              if cmp -s "${new_file}" "${current_file}"; then
+                echo "Mirror content is unchanged; nothing to push."
+                exit 0
+              fi
+            fi
+          fi
+
+          # Rebuild the mirror branch as a fresh orphan commit on every change and
+          # then force-push it. That keeps the branch at one visible commit instead
+          # of accumulating commit history forever.
+          #
+          # Important caveat: this is the closest practical GitHub Actions approach
+          # to "no history", but Git itself cannot guarantee zero backend storage
+          # immediately. Old mirror commits become unreachable after the force-push,
+          # and GitHub may keep unreachable objects until server-side garbage
+          # collection runs.
+          #
+          # Also note: if branch protection or rulesets forbid force-pushes to the
+          # mirror branch, this workflow will fail until that restriction is relaxed.
+          git switch --orphan "${MIRROR_BRANCH}-tmp"
+          git rm -rf . >/dev/null 2>&1 || true
+          git clean -fdx >/dev/null 2>&1 || true
+
+          mkdir -p "$(dirname "${MIRROR_FILE}")"
+          cp "${new_file}" "${MIRROR_FILE}"
+
+          cat > README.md <<'EOF'
+          # Generated mirror branch
+
+          This branch is maintained automatically by `.github/workflows/mirror-relays.yml`.
+
+          Source URL: https://relays.syncthing.net/endpoint/full
+          Mirrored file: endpoint/full.json
+          Update cadence: every 5 minutes (GitHub Actions minimum allowed schedule)
+
+          The workflow force-pushes a fresh orphan commit when the payload changes so
+          the branch stays at one visible commit instead of accumulating history.
+          EOF
+
+          git add README.md "${MIRROR_FILE}"
+          git commit -m "Mirror Syncthing relay endpoint"
+          git push --force origin HEAD:"${MIRROR_BRANCH}"
