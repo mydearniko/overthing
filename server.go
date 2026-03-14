@@ -36,7 +36,7 @@ type Server struct {
 	running bool
 	cancel  context.CancelFunc
 
-	streamSem   chan struct{}
+	streamSem chan struct{}
 }
 
 func NewServer(config ServerConfig) (*Server, error) {
@@ -234,7 +234,7 @@ func (s *Server) connectToRelay(ctx context.Context) (*tls.Conn, error) {
 	if s.config.Dialer != nil {
 		conn, err = s.config.Dialer(ctx, "tcp", s.relayAddr)
 	} else {
-		dialer := &net.Dialer{Timeout: 10 * time.Second}
+		dialer := network.NewDialer(10 * time.Second)
 		conn, err = dialer.DialContext(ctx, "tcp", s.relayAddr)
 	}
 
@@ -394,7 +394,7 @@ func (s *Server) establishTunnel(ctx context.Context, inv protocol.Invitation) (
 	if s.config.Dialer != nil {
 		sessConn, err = s.config.Dialer(ctx, "tcp", tunnelAddr)
 	} else {
-		dialer := &net.Dialer{}
+		dialer := network.NewDialer(0)
 		sessConn, err = dialer.DialContext(ctx, "tcp", tunnelAddr)
 	}
 

@@ -604,36 +604,3 @@ func luhn32(s string) rune {
 	return rune(alphabet[check])
 }
 ```
-
----
-
-Optimize the latency.
-
-```
-
-```
-
-### Core Rules
-
-- **State:** Treat all prior code as auto-applied unless explicitly stated as failed or requiring change.
-- **Reasoning:** Before providing the script, provide a rigorous reasoning. Explain the *why, what, and how* of your changes, discuss assumptions and alternatives, and justify your chosen approach.
-- **Code Output (Bash Script):**
-  - **Single Script:** You must provide a **single** Bash script inside a ```bash``` code block that performs all necessary file operations.
-  - **File Creation/Rewrite:** To create or overwrite files, use `cat << 'EOF' > path/to/file` (heredoc) syntax. Do not use partials; write the full file content within the heredoc.
-  - **Directory Handling:** Ensure you use `mkdir -p` for any new directories before creating files inside them.
-  - **Deletions/Moves:** Use `rm` to delete files and `mv` to move/rename files as needed.
-  - **completeness:** The script must be copy-paste ready and capable of executing the full refactor or feature implementation in one go.
-
-**Example Format:**
-```bash
-#!/bin/bash
-
-# Create directory
-mkdir -p path/to/dir
-# Create/Overwrite file
-cat << 'EOF' > path/to/dir/file.ext
-Full content of the file goes here...
-EOF
-# Remove old file
-rm path/to/old_file.ext
-```

@@ -64,3 +64,27 @@ func TestDiscoverFromURLsKeepsTimeForFallback(t *testing.T) {
 		t.Fatalf("expected 1 relay, got %d", len(relays))
 	}
 }
+
+func TestDiscoverFromURLsWithTLSFallbackRetriesWithoutCA(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(testRelayPayload))
+	}))
+	defer server.Close()
+
+	relays, err := discoverFromURLsWithTLSFallback(
+		context.Background(),
+		&http.Client{},
+		server.Client(),
+		[]string{server.URL},
+	)
+	if err != nil {
+		t.Fatalf("discoverFromURLsWithTLSFallback returned error: %v", err)
+	}
+
+	if len(relays) != 1 {
+		t.Fatalf("expected 1 relay, got %d", len(relays))
+	}
+}

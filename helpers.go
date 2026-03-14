@@ -10,6 +10,7 @@ import (
 
 	"github.com/hashicorp/yamux"
 
+	"github.com/mydearniko/overthing/pkg/network"
 	"github.com/mydearniko/overthing/pkg/relay"
 	"github.com/mydearniko/overthing/pkg/security"
 )
@@ -30,7 +31,10 @@ func parseRelayURI(uri string) (addr string, deviceID string, err error) {
 		return "", "", fmt.Errorf("invalid relay host: %w", err)
 	}
 
-	ips, err := net.LookupIP(host)
+	lookupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	ips, err := network.LookupIP(lookupCtx, host)
 	if err != nil {
 		return u.Host, deviceID, nil
 	}

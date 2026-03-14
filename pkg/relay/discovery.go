@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/mydearniko/overthing/pkg/network"
 	"github.com/mydearniko/overthing/pkg/security"
 )
 
@@ -166,21 +168,20 @@ var (
 // Discover fetches the list of available relays from the Syncthing endpoint,
 // falling back to this repository's mirror if the primary endpoint fails.
 func Discover(ctx context.Context, dialer Dialer) ([]Relay, error) {
-	client := &http.Client{}
-
-	// If a custom dialer is provided, inject it into the HTTP transport
-	if dialer != nil {
-		client.Transport = &http.Transport{
-			DialContext:           dialer,
-			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          100,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-		}
+	httpDialer := dialer
+	if httpDialer == nil {
+		httpDialer = network.NewDialer(DefaultDiscoveryRequestTimeout).DialContext
 	}
 
-	return discoverFromURLs(ctx, client, []string{DiscoveryURL, DiscoveryMirrorURL})
+	client := newDiscoveryHTTPClient(httpDialer, false)
+	insecureClient := newDiscoveryHTTPClient(httpDialer, true)
+
+	return discoverFromURLsWithTLSFallback(
+		ctx,
+		client,
+		insecureClient,
+		[]string{DiscoveryURL, DiscoveryMirrorURL},
+	)
 }
 
 func discoverFromURLs(ctx context.Context, client *http.Client, endpoints []string) ([]Relay, error) {
@@ -207,6 +208,17 @@ func discoverFromURLs(ctx context.Context, client *http.Client, endpoints []stri
 	}
 
 	return nil, fmt.Errorf("fetch relays from discovery endpoints: %w", errors.Join(errs...))
+}
+
+func discoverFromURLsWithTLSFallback(ctx context.Context, client *http.Client, insecureClient *http.Client, endpoints []string) ([]Relay, error) {
+	relays, err := discoverFromURLs(ctx, client, endpoints)
+	if err == nil || insecureClient == nil || !shouldRetryDiscoveryWithoutCA(err) {
+		return relays, err
+	}
+
+	// Discovery bootstrap is public metadata, and overthing still verifies
+	// relay IDs and the peer device ID after the relay is selected.
+	return discoverFromURLs(ctx, insecureClient, endpoints)
 }
 
 func discoverFromURL(ctx context.Context, client *http.Client, endpoint string, remainingEndpoints int) ([]Relay, error) {
@@ -243,6 +255,37 @@ func discoverFromURL(ctx context.Context, client *http.Client, endpoint string, 
 	}
 
 	return relays, nil
+}
+
+func newDiscoveryHTTPClient(dialer Dialer, insecureTLS bool) *http.Client {
+	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           dialer,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+
+	if insecureTLS {
+		transport.TLSClientConfig = &tls.Config{
+			InsecureSkipVerify: true,
+			MinVersion:         tls.VersionTLS12,
+		}
+	}
+
+	return &http.Client{Transport: transport}
+}
+
+func shouldRetryDiscoveryWithoutCA(err error) bool {
+	var unknownAuthority x509.UnknownAuthorityError
+	if errors.As(err, &unknownAuthority) {
+		return true
+	}
+
+	var systemRootsErr x509.SystemRootsError
+	return errors.As(err, &systemRootsErr)
 }
 
 func discoveryAttemptTimeout(ctx context.Context, remainingEndpoints int) time.Duration {
@@ -346,7 +389,7 @@ func probeLatency(ctx context.Context, addr string, relayID string, tlsCert *tls
 	if dialer != nil {
 		conn, err = dialer(ctx, "tcp", addr)
 	} else {
-		d := &net.Dialer{}
+		d := network.NewDialer(0)
 		conn, err = d.DialContext(ctx, "tcp", addr)
 	}
 
@@ -408,7 +451,7 @@ func TestLatency(ctx context.Context, r *Relay, opts *Options) error {
 	// If a custom dialer is present, we cannot assume the default resolver
 	// routes correctly, or the dialer might be a proxy requiring hostnames.
 	if opts.Dialer == nil {
-		ips, err := net.DefaultResolver.LookupIP(ctx, "ip", r.Host)
+		ips, err := network.LookupIP(ctx, r.Host)
 		if err == nil {
 			var targetIP string
 			for _, ip := range ips {
