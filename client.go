@@ -400,17 +400,19 @@ func (c *Client) scanAndConnect(ctx context.Context) (net.Conn, string, error) {
 	if len(relays) == 0 {
 		c.log("info", "Fetching public relay list...")
 
-		// Try 3 times, short timeouts, to survive packet loss/DNS blips
-		for i := 0; i < 3; i++ {
-			fetchCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		// Try twice with generous timeouts. Discover() already handles DNS
+		// fallback and embedded relay list internally, so we mainly need to
+		// give it enough time to succeed over slow or lossy links.
+		for i := 0; i < 2; i++ {
+			fetchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			relays, err = relay.Discover(fetchCtx, relay.Dialer(c.config.Dialer))
 			cancel()
 
 			if err == nil && len(relays) > 0 {
 				break
 			}
-			if i < 2 {
-				time.Sleep(200 * time.Millisecond)
+			if i < 1 {
+				time.Sleep(500 * time.Millisecond)
 			}
 		}
 

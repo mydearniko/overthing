@@ -167,7 +167,11 @@ var (
 
 // Discover fetches the list of available relays from the Syncthing endpoint,
 // falling back to this repository's mirror if the primary endpoint fails.
+// If all network-based discovery fails (DNS, TLS, firewall, etc.), it retries
+// once using public DNS servers and finally returns a hardcoded embedded list.
 func Discover(ctx context.Context, dialer Dialer) ([]Relay, error) {
+	endpoints := []string{DiscoveryURL, DiscoveryMirrorURL}
+
 	httpDialer := dialer
 	if httpDialer == nil {
 		httpDialer = network.NewDialer(DefaultDiscoveryRequestTimeout).DialContext
@@ -176,12 +180,37 @@ func Discover(ctx context.Context, dialer Dialer) ([]Relay, error) {
 	client := newDiscoveryHTTPClient(httpDialer, false)
 	insecureClient := newDiscoveryHTTPClient(httpDialer, true)
 
-	return discoverFromURLsWithTLSFallback(
-		ctx,
-		client,
-		insecureClient,
-		[]string{DiscoveryURL, DiscoveryMirrorURL},
-	)
+	relays, err := discoverFromURLsWithTLSFallback(ctx, client, insecureClient, endpoints)
+	if err == nil {
+		return relays, nil
+	}
+
+	// If a custom dialer was provided we cannot substitute it, so fall back to
+	// the embedded list immediately.
+	if dialer != nil {
+		return EmbeddedRelays(), nil
+	}
+
+	// Retry with bootstrap DNS (1.1.1.1 / 8.8.8.8) in case system DNS is broken.
+	if ctx.Err() == nil {
+		bootstrapDialer := network.NewBootstrapDialer(DefaultDiscoveryRequestTimeout).DialContext
+		bootstrapClient := newDiscoveryHTTPClient(bootstrapDialer, false)
+		bootstrapInsecure := newDiscoveryHTTPClient(bootstrapDialer, true)
+
+		relays, err2 := discoverFromURLsWithTLSFallback(ctx, bootstrapClient, bootstrapInsecure, endpoints)
+		if err2 == nil {
+			return relays, nil
+		}
+	}
+
+	// All network-based discovery failed; return the embedded relay list.
+	if embedded := EmbeddedRelays(); len(embedded) > 0 {
+		return embedded, nil
+	}
+
+	// Should never happen (embedded list is compiled in), but preserve the
+	// original error if it somehow does.
+	return nil, err
 }
 
 func discoverFromURLs(ctx context.Context, client *http.Client, endpoints []string) ([]Relay, error) {

@@ -40,6 +40,50 @@ func NewDialer(timeout time.Duration) *net.Dialer {
 	return d
 }
 
+// NewBootstrapDialer returns a dialer that always uses public DNS servers
+// (1.1.1.1, 8.8.8.8) instead of the system resolver. This is useful in
+// environments where the system DNS is broken, missing, or firewalled
+// (containers, minimal VMs, restrictive networks).
+func NewBootstrapDialer(timeout time.Duration) *net.Dialer {
+	return &net.Dialer{
+		Timeout:  timeout,
+		Resolver: bootstrapResolver(),
+	}
+}
+
+var (
+	bootstrapResolverOnce sync.Once
+	bootstrapResolverVal  *net.Resolver
+	bootstrapDNSIndex     uint32
+)
+
+func bootstrapResolver() *net.Resolver {
+	bootstrapResolverOnce.Do(func() {
+		servers := make([]string, len(bootstrapDNSServers))
+		copy(servers, bootstrapDNSServers)
+
+		if custom := parseDNSServerList(os.Getenv("OVERTHING_DNS")); len(custom) > 0 {
+			servers = custom
+		}
+
+		bootstrapResolverVal = &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				server := servers[int(atomic.AddUint32(&bootstrapDNSIndex, 1)-1)%len(servers)]
+				if !strings.HasPrefix(network, "udp") && !strings.HasPrefix(network, "tcp") {
+					network = "udp"
+				}
+				return (&net.Dialer{Timeout: androidDNSDialTimeout}).DialContext(
+					ctx,
+					network,
+					net.JoinHostPort(server, "53"),
+				)
+			},
+		}
+	})
+	return bootstrapResolverVal
+}
+
 // LookupIP mirrors net.DefaultResolver.LookupIP but uses the Android override
 // when available.
 func LookupIP(ctx context.Context, host string) ([]net.IP, error) {
