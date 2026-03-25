@@ -57,6 +57,17 @@ const (
 
 	// FastMinTestDuration ensures we test for at least this long before early termination
 	FastMinTestDuration = 2 * time.Second
+
+	// TCP pre-filter constants
+	DefaultTCPPreFilterTimeout     = 500 * time.Millisecond
+	DefaultTCPPreFilterConcurrency = 500
+	DefaultTCPPreFilterTopN        = 80
+	FastTCPPreFilterTopN           = 30
+
+	// Adaptive retry constants
+	AdaptiveMinRelays         = 10
+	AdaptiveMaxRetries        = 3
+	AdaptiveTimeoutMultiplier = 2
 )
 
 // Dialer is a function that matches net.Dialer.DialContext
@@ -69,12 +80,20 @@ type Relay struct {
 	Host     string        `json:"host"`
 	Port     string        `json:"port"`
 	Latency  time.Duration `json:"latency_ns"`
+	Jitter   time.Duration `json:"jitter_ns,omitempty"`
 	Provider string        `json:"provider,omitempty"`
 }
 
 // LatencyMS returns latency in milliseconds
 func (r *Relay) LatencyMS() float64 {
 	return float64(r.Latency) / float64(time.Millisecond)
+}
+
+// Score returns a composite quality score (lower is better).
+// Combines latency with jitter penalty to prefer stable relays.
+// With a single probe (Jitter=0), Score equals Latency.
+func (r *Relay) Score() time.Duration {
+	return r.Latency + r.Jitter*2
 }
 
 // Options configures the relay discovery process
@@ -110,6 +129,19 @@ type Options struct {
 	// can trigger. This ensures geographically distant relays have time to respond.
 	MinTestDuration time.Duration
 
+	// TCPPreFilterTimeout enables two-phase testing. If > 0, a quick TCP
+	// reachability scan runs before TLS verification.
+	TCPPreFilterTimeout time.Duration
+
+	// TCPPreFilterConcurrency controls parallelism for the TCP scan phase.
+	TCPPreFilterConcurrency int
+
+	// TCPPreFilterTopN limits how many TCP-reachable relays proceed to TLS testing.
+	TCPPreFilterTopN int
+
+	// OnTCPPreFilter is called after TCP pre-filter completes.
+	OnTCPPreFilter func(total, reachable int)
+
 	// OnFetchStart is called when relay list fetch begins
 	OnFetchStart func()
 
@@ -142,6 +174,9 @@ func DefaultOptions() Options {
 		EarlyTerminateLatency:    0,
 		MinTestedBeforeEarlyStop: 0,
 		MinTestDuration:          0,
+		TCPPreFilterTimeout:      DefaultTCPPreFilterTimeout,
+		TCPPreFilterConcurrency:  DefaultTCPPreFilterConcurrency,
+		TCPPreFilterTopN:         DefaultTCPPreFilterTopN,
 	}
 }
 
@@ -154,6 +189,9 @@ func FastOptions() Options {
 		EarlyTerminateLatency:    FastEarlyTerminateLatency,
 		MinTestedBeforeEarlyStop: FastMinTestedBeforeEarlyStop,
 		MinTestDuration:          FastMinTestDuration,
+		TCPPreFilterTimeout:      DefaultTCPPreFilterTimeout,
+		TCPPreFilterConcurrency:  DefaultTCPPreFilterConcurrency,
+		TCPPreFilterTopN:         FastTCPPreFilterTopN,
 	}
 }
 
@@ -450,6 +488,130 @@ func ParseURL(rawURL string) (*Relay, error) {
 	}, nil
 }
 
+// tcpProbe performs a quick TCP connect to measure reachability and RTT.
+// This is much cheaper than a full TLS handshake.
+func tcpProbe(ctx context.Context, addr string, dialer Dialer) (time.Duration, error) {
+	start := time.Now()
+	var conn net.Conn
+	var err error
+	if dialer != nil {
+		conn, err = dialer(ctx, "tcp", addr)
+	} else {
+		d := &net.Dialer{}
+		conn, err = d.DialContext(ctx, "tcp", addr)
+	}
+	if err != nil {
+		return 0, err
+	}
+	conn.Close()
+	return time.Since(start), nil
+}
+
+type tcpResult struct {
+	index int
+	rtt   time.Duration
+}
+
+// tcpPreFilter probes all relays with a quick TCP connect and returns
+// the fastest reachable relays sorted by TCP RTT, up to topN.
+// It uses adaptive retry: if too few relays respond within the timeout,
+// it retries failed relays with a longer timeout.
+func tcpPreFilter(ctx context.Context, relays []Relay, timeout time.Duration, maxConcurrent int, topN int, dialer Dialer) []Relay {
+	if len(relays) == 0 {
+		return nil
+	}
+	if topN <= 0 || topN > len(relays) {
+		topN = len(relays)
+	}
+	if maxConcurrent <= 0 {
+		maxConcurrent = DefaultTCPPreFilterConcurrency
+	}
+
+	// Track which relays have been successfully probed
+	type indexedResult struct {
+		relay Relay
+		rtt   time.Duration
+	}
+
+	var successful []indexedResult
+	pending := make([]int, len(relays))
+	for i := range pending {
+		pending[i] = i
+	}
+
+	currentTimeout := timeout
+
+	for attempt := 0; attempt <= AdaptiveMaxRetries; attempt++ {
+		if ctx.Err() != nil {
+			break
+		}
+		if attempt > 0 && (len(successful) >= AdaptiveMinRelays || len(successful) >= topN) {
+			break // enough relays found
+		}
+		if attempt > 0 {
+			currentTimeout *= time.Duration(AdaptiveTimeoutMultiplier)
+		}
+
+		var mu sync.Mutex
+		var newSuccessful []indexedResult
+		var stillPending []int
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, maxConcurrent)
+
+		for _, idx := range pending {
+			idx := idx
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				select {
+				case sem <- struct{}{}:
+					defer func() { <-sem }()
+				case <-ctx.Done():
+					return
+				}
+
+				probeCtx, cancel := context.WithTimeout(ctx, currentTimeout)
+				defer cancel()
+
+				addr := net.JoinHostPort(relays[idx].Host, relays[idx].Port)
+				rtt, err := tcpProbe(probeCtx, addr, dialer)
+
+				mu.Lock()
+				if err == nil {
+					r := relays[idx]
+					newSuccessful = append(newSuccessful, indexedResult{relay: r, rtt: rtt})
+				} else {
+					stillPending = append(stillPending, idx)
+				}
+				mu.Unlock()
+			}()
+		}
+		wg.Wait()
+
+		successful = append(successful, newSuccessful...)
+		pending = stillPending
+
+		if len(pending) == 0 {
+			break
+		}
+	}
+
+	// Sort by TCP RTT
+	sort.Slice(successful, func(i, j int) bool {
+		return successful[i].rtt < successful[j].rtt
+	})
+
+	if len(successful) > topN {
+		successful = successful[:topN]
+	}
+
+	filtered := make([]Relay, len(successful))
+	for i, r := range successful {
+		filtered[i] = r.relay
+	}
+	return filtered
+}
+
 // probeLatency does a single TCP+TLS probe and returns the latency
 func probeLatency(ctx context.Context, addr string, relayID string, tlsCert *tls.Certificate, dialer Dialer) (time.Duration, error) {
 	start := time.Now()
@@ -541,6 +703,8 @@ func TestLatency(ctx context.Context, r *Relay, opts *Options) error {
 	}
 
 	var minLatency time.Duration
+	var maxLatency time.Duration
+	var successCount int
 
 	for i := 0; i < probes; i++ {
 		if ctx.Err() != nil {
@@ -561,8 +725,12 @@ func TestLatency(ctx context.Context, r *Relay, opts *Options) error {
 			continue
 		}
 
+		successCount++
 		if minLatency == 0 || latency < minLatency {
 			minLatency = latency
+		}
+		if latency > maxLatency {
+			maxLatency = latency
 		}
 	}
 
@@ -571,6 +739,9 @@ func TestLatency(ctx context.Context, r *Relay, opts *Options) error {
 	}
 
 	r.Latency = minLatency
+	if successCount > 1 {
+		r.Jitter = maxLatency - minLatency
+	}
 
 	return nil
 }
@@ -628,6 +799,9 @@ func FindFastestN(ctx context.Context, n int, opts *Options) ([]Relay, error) {
 }
 
 // TestAllAndSort tests all provided relays and returns up to n fastest ones.
+// When TCPPreFilterTimeout > 0, it runs a two-phase strategy:
+// Phase 1: Quick TCP reachability scan to eliminate unreachable relays.
+// Phase 2: Full TLS+ID verification of the top TCP-reachable candidates.
 func TestAllAndSort(ctx context.Context, relays []Relay, n int, opts *Options) ([]Relay, error) {
 	if opts == nil {
 		defaultOpts := DefaultOptions()
@@ -636,6 +810,19 @@ func TestAllAndSort(ctx context.Context, relays []Relay, n int, opts *Options) (
 
 	if len(relays) == 0 {
 		return nil, fmt.Errorf("no relays to test")
+	}
+
+	// Phase 1: TCP pre-filter
+	if opts.TCPPreFilterTimeout > 0 {
+		filtered := tcpPreFilter(ctx, relays, opts.TCPPreFilterTimeout,
+			opts.TCPPreFilterConcurrency, opts.TCPPreFilterTopN, opts.Dialer)
+		if len(filtered) > 0 {
+			if opts.OnTCPPreFilter != nil {
+				opts.OnTCPPreFilter(len(relays), len(filtered))
+			}
+			relays = filtered
+		}
+		// If no relays passed TCP pre-filter, fall through to test all
 	}
 
 	maxConcurrent := opts.MaxConcurrent
@@ -740,7 +927,7 @@ func TestAllAndSort(ctx context.Context, relays []Relay, n int, opts *Options) (
 	}
 
 	sort.Slice(available, func(i, j int) bool {
-		return available[i].Latency < available[j].Latency
+		return available[i].Score() < available[j].Score()
 	})
 
 	if n <= 0 || n > len(available) {
