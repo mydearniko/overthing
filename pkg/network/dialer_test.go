@@ -32,6 +32,23 @@ func TestAppendDNSServerFiltersInvalidValues(t *testing.T) {
 	}
 }
 
+func TestBootstrapDNSServersIncludesCustomAndBuiltIns(t *testing.T) {
+	t.Setenv("OVERTHING_DNS", "9.9.9.9,8.8.8.8,127.0.0.1")
+
+	got := BootstrapDNSServers()
+	want := []string{
+		"9.9.9.9",
+		"8.8.8.8",
+		"1.1.1.1",
+		"2606:4700:4700::1111",
+		"2001:4860:4860::8888",
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected bootstrap DNS servers: got %v want %v", got, want)
+	}
+}
+
 func TestPlatformLooksAndroid(t *testing.T) {
 	t.Parallel()
 

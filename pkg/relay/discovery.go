@@ -165,52 +165,94 @@ var (
 	cacheValidFor   = 5 * time.Minute
 )
 
+type discoveryStrategy struct {
+	name           string
+	client         *http.Client
+	insecureClient *http.Client
+}
+
 // Discover fetches the list of available relays from the Syncthing endpoint,
 // falling back to this repository's mirror if the primary endpoint fails.
-// If all network-based discovery fails (DNS, TLS, firewall, etc.), it retries
-// once using public DNS servers and finally returns a hardcoded embedded list.
+// When no custom dialer is provided it races multiple resolver strategies:
+// the normal platform resolver, the bootstrap DNS pool, and each bootstrap DNS
+// server individually. If all network-based discovery fails, it returns an error.
 func Discover(ctx context.Context, dialer Dialer) ([]Relay, error) {
 	endpoints := []string{DiscoveryURL, DiscoveryMirrorURL}
+	return discoverWithStrategies(ctx, discoveryStrategies(dialer), endpoints)
+}
 
-	httpDialer := dialer
-	if httpDialer == nil {
-		httpDialer = network.NewDialer(DefaultDiscoveryRequestTimeout).DialContext
-	}
-
-	client := newDiscoveryHTTPClient(httpDialer, false)
-	insecureClient := newDiscoveryHTTPClient(httpDialer, true)
-
-	relays, err := discoverFromURLsWithTLSFallback(ctx, client, insecureClient, endpoints)
-	if err == nil {
-		return relays, nil
-	}
-
-	// If a custom dialer was provided we cannot substitute it, so fall back to
-	// the embedded list immediately.
+func discoveryStrategies(dialer Dialer) []discoveryStrategy {
 	if dialer != nil {
-		return EmbeddedRelays(), nil
+		return []discoveryStrategy{newDiscoveryStrategy("custom dialer", dialer)}
 	}
 
-	// Retry with bootstrap DNS (1.1.1.1 / 8.8.8.8) in case system DNS is broken.
-	if ctx.Err() == nil {
-		bootstrapDialer := network.NewBootstrapDialer(DefaultDiscoveryRequestTimeout).DialContext
-		bootstrapClient := newDiscoveryHTTPClient(bootstrapDialer, false)
-		bootstrapInsecure := newDiscoveryHTTPClient(bootstrapDialer, true)
+	strategies := []discoveryStrategy{
+		newDiscoveryStrategy("system resolver", network.NewDialer(DefaultDiscoveryRequestTimeout).DialContext),
+	}
 
-		relays, err2 := discoverFromURLsWithTLSFallback(ctx, bootstrapClient, bootstrapInsecure, endpoints)
-		if err2 == nil {
-			return relays, nil
+	bootstrapServers := network.BootstrapDNSServers()
+	if len(bootstrapServers) == 0 {
+		return strategies
+	}
+
+	strategies = append(strategies, newDiscoveryStrategy("bootstrap DNS pool", network.NewBootstrapDialer(DefaultDiscoveryRequestTimeout).DialContext))
+
+	for _, server := range bootstrapServers {
+		strategies = append(strategies, newDiscoveryStrategy(
+			fmt.Sprintf("bootstrap DNS %s", server),
+			network.NewDNSDialer(DefaultDiscoveryRequestTimeout, []string{server}).DialContext,
+		))
+	}
+
+	return strategies
+}
+
+func newDiscoveryStrategy(name string, dialer Dialer) discoveryStrategy {
+	return discoveryStrategy{
+		name:           name,
+		client:         newDiscoveryHTTPClient(dialer, false),
+		insecureClient: newDiscoveryHTTPClient(dialer, true),
+	}
+}
+
+func discoverWithStrategies(ctx context.Context, strategies []discoveryStrategy, endpoints []string) ([]Relay, error) {
+	if len(strategies) == 0 {
+		return nil, fmt.Errorf("no discovery strategies configured")
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	type result struct {
+		relays []Relay
+		err    error
+	}
+
+	results := make(chan result, len(strategies))
+
+	for _, strategy := range strategies {
+		strategy := strategy
+		go func() {
+			relays, err := discoverFromURLsWithTLSFallback(ctx, strategy.client, strategy.insecureClient, endpoints)
+			if err != nil {
+				err = fmt.Errorf("%s: %w", strategy.name, err)
+			}
+			results <- result{relays: relays, err: err}
+		}()
+	}
+
+	var errs []error
+
+	for range strategies {
+		result := <-results
+		if result.err == nil {
+			cancel()
+			return result.relays, nil
 		}
+		errs = append(errs, result.err)
 	}
 
-	// All network-based discovery failed; return the embedded relay list.
-	if embedded := EmbeddedRelays(); len(embedded) > 0 {
-		return embedded, nil
-	}
-
-	// Should never happen (embedded list is compiled in), but preserve the
-	// original error if it somehow does.
-	return nil, err
+	return nil, fmt.Errorf("fetch relays from discovery endpoints: %w", errors.Join(errs...))
 }
 
 func discoverFromURLs(ctx context.Context, client *http.Client, endpoints []string) ([]Relay, error) {

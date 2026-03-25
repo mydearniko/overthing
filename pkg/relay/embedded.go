@@ -1,9 +1,9 @@
 package relay
 
-// embeddedRelayURLs is a curated set of geographically distributed, high-uptime
-// Syncthing relay servers. This list is used as a last-resort fallback when all
-// network-based discovery endpoints are unreachable (e.g. broken DNS, missing CA
-// certs, firewalled HTTPS, air-gapped networks with relay access, etc.).
+// embeddedRelayURLs is a curated snapshot of geographically distributed,
+// high-uptime Syncthing relay servers. Discover() does not use this list
+// automatically; it remains available for callers that want a pinned or
+// offline snapshot instead of live pool discovery.
 //
 // The relays are selected for geographic diversity and stability (high connection
 // count, multi-day uptime). Since relay IPs and IDs can change over time, this

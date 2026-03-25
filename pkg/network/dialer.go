@@ -26,7 +26,6 @@ var (
 
 	androidDNSServersOnce sync.Once
 	androidDNSServers     []string
-	androidDNSIndex       uint32
 )
 
 // NewDialer returns the default dialer used by overthing.
@@ -41,47 +40,37 @@ func NewDialer(timeout time.Duration) *net.Dialer {
 }
 
 // NewBootstrapDialer returns a dialer that always uses public DNS servers
-// (1.1.1.1, 8.8.8.8) instead of the system resolver. This is useful in
-// environments where the system DNS is broken, missing, or firewalled
-// (containers, minimal VMs, restrictive networks).
+// instead of the system resolver. The resolver list includes any valid
+// addresses from OVERTHING_DNS plus the built-in public bootstrap resolvers.
 func NewBootstrapDialer(timeout time.Duration) *net.Dialer {
-	return &net.Dialer{
-		Timeout:  timeout,
-		Resolver: bootstrapResolver(),
-	}
+	return NewDNSDialer(timeout, BootstrapDNSServers())
 }
 
-var (
-	bootstrapResolverOnce sync.Once
-	bootstrapResolverVal  *net.Resolver
-	bootstrapDNSIndex     uint32
-)
+// BootstrapDNSServers returns the full DNS server set used for discovery
+// fallback. User-supplied OVERTHING_DNS servers are tried first, then the
+// built-in public resolvers are appended as extra attempts.
+func BootstrapDNSServers() []string {
+	servers := parseDNSServerList(os.Getenv("OVERTHING_DNS"))
+	for _, server := range bootstrapDNSServers {
+		servers = appendDNSServer(servers, server)
+	}
+	return servers
+}
 
-func bootstrapResolver() *net.Resolver {
-	bootstrapResolverOnce.Do(func() {
-		servers := make([]string, len(bootstrapDNSServers))
-		copy(servers, bootstrapDNSServers)
+// NewDNSDialer returns a dialer that resolves names via the supplied DNS
+// server list. Invalid, duplicate, loopback, and unspecified values are ignored.
+// When the supplied list is empty after normalization it falls back to the
+// bootstrap resolver set.
+func NewDNSDialer(timeout time.Duration, servers []string) *net.Dialer {
+	resolverServers := normalizeDNSServers(servers)
+	if len(resolverServers) == 0 {
+		resolverServers = BootstrapDNSServers()
+	}
 
-		if custom := parseDNSServerList(os.Getenv("OVERTHING_DNS")); len(custom) > 0 {
-			servers = custom
-		}
-
-		bootstrapResolverVal = &net.Resolver{
-			PreferGo: true,
-			Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
-				server := servers[int(atomic.AddUint32(&bootstrapDNSIndex, 1)-1)%len(servers)]
-				if !strings.HasPrefix(network, "udp") && !strings.HasPrefix(network, "tcp") {
-					network = "udp"
-				}
-				return (&net.Dialer{Timeout: androidDNSDialTimeout}).DialContext(
-					ctx,
-					network,
-					net.JoinHostPort(server, "53"),
-				)
-			},
-		}
-	})
-	return bootstrapResolverVal
+	return &net.Dialer{
+		Timeout:  timeout,
+		Resolver: resolverWithServers(resolverServers),
+	}
 }
 
 // LookupIP mirrors net.DefaultResolver.LookupIP but uses the Android override
@@ -110,20 +99,7 @@ func resolverForPlatform() *net.Resolver {
 			return
 		}
 
-		defaultResolver = &net.Resolver{
-			PreferGo: true,
-			Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
-				server := servers[int(atomic.AddUint32(&androidDNSIndex, 1)-1)%len(servers)]
-				if !strings.HasPrefix(network, "udp") && !strings.HasPrefix(network, "tcp") {
-					network = "udp"
-				}
-				return (&net.Dialer{Timeout: androidDNSDialTimeout}).DialContext(
-					ctx,
-					network,
-					net.JoinHostPort(server, "53"),
-				)
-			},
-		}
+		defaultResolver = resolverWithServers(servers)
 	})
 
 	return defaultResolver
@@ -144,13 +120,7 @@ func androidResolverServers() []string {
 }
 
 func discoverAndroidDNSServers() []string {
-	if servers := parseDNSServerList(os.Getenv("OVERTHING_DNS")); len(servers) > 0 {
-		return servers
-	}
-
-	servers := make([]string, len(bootstrapDNSServers))
-	copy(servers, bootstrapDNSServers)
-	return servers
+	return BootstrapDNSServers()
 }
 
 func parseDNSServerList(value string) []string {
@@ -162,6 +132,14 @@ func parseDNSServerList(value string) []string {
 		servers = appendDNSServer(servers, part)
 	}
 
+	return servers
+}
+
+func normalizeDNSServers(values []string) []string {
+	var servers []string
+	for _, value := range values {
+		servers = appendDNSServer(servers, value)
+	}
 	return servers
 }
 
@@ -179,6 +157,34 @@ func appendDNSServer(servers []string, raw string) []string {
 	}
 
 	return append(servers, normalized)
+}
+
+func resolverWithServers(servers []string) *net.Resolver {
+	servers = normalizeDNSServers(servers)
+	if len(servers) == 0 {
+		return nil
+	}
+
+	var serverIndex uint32
+
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			server := servers[int(atomic.AddUint32(&serverIndex, 1)-1)%len(servers)]
+			return (&net.Dialer{Timeout: androidDNSDialTimeout}).DialContext(
+				ctx,
+				resolverDialNetwork(network),
+				net.JoinHostPort(server, "53"),
+			)
+		},
+	}
+}
+
+func resolverDialNetwork(network string) string {
+	if strings.HasPrefix(network, "udp") || strings.HasPrefix(network, "tcp") {
+		return network
+	}
+	return "udp"
 }
 
 func platformLooksAndroid(goos string, termuxVersion string, prefix string, androidRoot string, androidData string) bool {
