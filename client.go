@@ -334,6 +334,9 @@ func (c *Client) establishNewSession(ctx context.Context) (*yamux.Session, *tls.
 
 		c.config.RelayURI = relayURI
 		c.relayAddr, c.relayID, _ = parseRelayURI(relayURI)
+		if c.config.OnRelayConnected != nil {
+			c.config.OnRelayConnected(relayURI)
+		}
 
 		session, bepConn, err := c.completeBEPHandshake(tunnelConn)
 		if err != nil {
@@ -378,6 +381,9 @@ func (c *Client) establishNewSession(ctx context.Context) (*yamux.Session, *tls.
 			return nil, nil, err
 		}
 
+		if c.config.OnRelayConnected != nil {
+			c.config.OnRelayConnected(c.config.RelayURI)
+		}
 		return session, bepConn, nil
 	}
 

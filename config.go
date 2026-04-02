@@ -103,6 +103,11 @@ type ClientConfig struct {
 	// Default: 500ms
 	ReconnectDelay time.Duration
 
+	// OnRelayConnected is called when the client successfully connects to a relay.
+	// It provides the relay URI that was used (whether discovered or explicitly configured).
+	// Optional.
+	OnRelayConnected func(relayURI string)
+
 	// OnTunnelEstablished is called when the tunnel is established.
 	// Optional.
 	OnTunnelEstablished func()
