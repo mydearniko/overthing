@@ -24,7 +24,7 @@ jobs:
       SOURCE_URL: https://relays.syncthing.net/endpoint/full
       MIRROR_BRANCH: mirror
       MIRROR_FILE: endpoint/full.json
-      RULESET_FILE: singbox/relay-ips.json
+      RELAY_IPS_FILE: relay-ips.txt
 
     steps:
       - name: Check out repository
@@ -48,7 +48,7 @@ jobs:
             --output "${new_file}" \
             "${SOURCE_URL}"
 
-          # --- Generate sing-box rule-set of unique relay IPs ---
+          # --- Generate plain-text list of unique relay IPs ---
 
           # Extract hostnames from relay URLs (relay://host:port?...)
           hosts_file="${workdir}/hosts.txt"
@@ -76,31 +76,27 @@ jobs:
           ip_count="$(wc -l < "${sorted_ips_file}")"
           echo "Resolved ${ip_count} unique relay IPs from $(wc -l < "${hosts_file}") hosts"
 
-          # Build sing-box rule-set JSON (version 2)
-          ruleset_file="${workdir}/relay-ips.json"
-          jq -nR '
-            {
-              version: 2,
-              rules: [
-                {
-                  ip_cidr: [inputs | select(length > 0) | . + "/32"]
-                }
-              ]
-            }
-          ' < "${sorted_ips_file}" > "${ruleset_file}"
+          # Build plain IP/CIDR list
+          relay_ips_file="${workdir}/relay-ips.txt"
+          sed '/^$/d' "${sorted_ips_file}" | while IFS= read -r ip; do
+            if [[ "${ip}" =~ : ]]; then
+              echo "${ip}/128"
+            else
+              echo "${ip}/32"
+            fi
+          done > "${relay_ips_file}"
 
           # --- Determine whether anything changed ---
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          changed=false
           if git fetch --depth=1 origin "${MIRROR_BRANCH}:refs/remotes/origin/${MIRROR_BRANCH}" 2>/dev/null; then
             current_endpoint="${workdir}/current-endpoint.json"
-            current_ruleset="${workdir}/current-ruleset.json"
+            current_ips="${workdir}/current-ips.txt"
             if git show "origin/${MIRROR_BRANCH}:${MIRROR_FILE}" > "${current_endpoint}" 2>/dev/null \
-               && git show "origin/${MIRROR_BRANCH}:${RULESET_FILE}" > "${current_ruleset}" 2>/dev/null; then
-              if cmp -s "${new_file}" "${current_endpoint}" && cmp -s "${ruleset_file}" "${current_ruleset}"; then
+               && git show "origin/${MIRROR_BRANCH}:${RELAY_IPS_FILE}" > "${current_ips}" 2>/dev/null; then
+              if cmp -s "${new_file}" "${current_endpoint}" && cmp -s "${relay_ips_file}" "${current_ips}"; then
                 echo "Mirror content is unchanged; nothing to push."
                 exit 0
               fi
@@ -123,9 +119,9 @@ jobs:
           git rm -rf . >/dev/null 2>&1 || true
           git clean -fdx >/dev/null 2>&1 || true
 
-          mkdir -p "$(dirname "${MIRROR_FILE}")" "$(dirname "${RULESET_FILE}")"
+          mkdir -p "$(dirname "${MIRROR_FILE}")"
           cp "${new_file}" "${MIRROR_FILE}"
-          cp "${ruleset_file}" "${RULESET_FILE}"
+          cp "${relay_ips_file}" "${RELAY_IPS_FILE}"
 
           cat > README.md <<'EOF'
           # Generated mirror branch
@@ -134,13 +130,13 @@ jobs:
 
           Source URL: https://relays.syncthing.net/endpoint/full
           Mirrored file: endpoint/full.json
-          sing-box rule-set: singbox/relay-ips.json
+          Relay IPs: relay-ips.txt
           Update cadence: every 5 minutes (GitHub Actions minimum allowed schedule)
 
           The workflow force-pushes a fresh orphan commit when the payload changes so
           the branch stays at one visible commit instead of accumulating history.
           EOF
 
-          git add README.md "${MIRROR_FILE}" "${RULESET_FILE}"
+          git add README.md "${MIRROR_FILE}" "${RELAY_IPS_FILE}"
           git commit -m "Mirror Syncthing relay endpoint"
           git push --force origin HEAD:"${MIRROR_BRANCH}"
