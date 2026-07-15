@@ -9,6 +9,7 @@ This package allows you to connect two endpoints (behind NATs or firewalls) by u
 - **NAT Traversal**: Connect endpoints behind restrictive firewalls without port forwarding.
 - **Relay Hints**: Device IDs automatically embed the current relay address, allowing instant direct connections without discovery overhead.
 - **Fallback Discovery**: If the embedded relay hint fails (e.g., server switched relays), the client automatically scans the global network to find the device.
+- **Quality-Aware Relay Selection**: Low-capacity and saturated relays are avoided during normal discovery and retained only as last-resort fallbacks.
 - **End-to-End Encryption**: All traffic is wrapped in TLS 1.3. Relays simply forward encrypted bytes and cannot see the content.
 - **Connection Multiplexing**: Run multiple logical streams over a single relay connection.
 

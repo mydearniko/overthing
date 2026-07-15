@@ -31,6 +31,11 @@ var (
 	relayCacheTTL  = 15 * time.Minute
 )
 
+const (
+	preferredRelayScanTimeout = 2500 * time.Millisecond
+	degradedRelayScanTimeout  = 8 * time.Second
+)
+
 type Client struct {
 	config      ClientConfig
 	tlsConfig   *tls.Config
@@ -444,13 +449,64 @@ func (c *Client) scanAndConnect(ctx context.Context) (net.Conn, string, error) {
 		relayCacheMu.Unlock()
 	}
 
-	// 3. Shuffle
+	preferred, degraded := relay.PartitionByQuality(relays)
+	if len(degraded) > 0 {
+		c.log("info", fmt.Sprintf("Avoiding %d low-capacity or saturated relays while scanning %d preferred relays", len(degraded), len(preferred)))
+	}
+
+	var totals relayScanStats
+	if len(preferred) > 0 {
+		c.log("info", fmt.Sprintf("Scanning %d preferred relays for device %x...", len(preferred), c.targetBytes[:4]))
+		conn, relayURI, stats, scanErr := c.scanRelayGroup(ctx, preferred, preferredRelayScanTimeout)
+		totals.add(stats)
+		if scanErr == nil {
+			return c.reportFoundRelay(conn, relayURI, false)
+		}
+		if ctx.Err() != nil {
+			return nil, "", ctx.Err()
+		}
+	}
+
+	if len(degraded) > 0 {
+		c.log("warn", fmt.Sprintf("Target not found on preferred relays; scanning %d degraded relays as a last resort", len(degraded)))
+		conn, relayURI, stats, scanErr := c.scanRelayGroup(ctx, degraded, degradedRelayScanTimeout)
+		totals.add(stats)
+		if scanErr == nil {
+			return c.reportFoundRelay(conn, relayURI, true)
+		}
+		if ctx.Err() != nil {
+			return nil, "", ctx.Err()
+		}
+	}
+
+	c.log("warn", fmt.Sprintf("Scan Stats | Dial/Net Fail: %d | Not Found: %d | TLS/Other: %d",
+		totals.dial,
+		totals.notFound,
+		totals.tls+totals.other))
+
+	return nil, "", errors.New("target device not found on any relay")
+}
+
+type relayScanStats struct {
+	dial     int32
+	tls      int32
+	notFound int32
+	other    int32
+}
+
+func (s *relayScanStats) add(other relayScanStats) {
+	s.dial += other.dial
+	s.tls += other.tls
+	s.notFound += other.notFound
+	s.other += other.other
+}
+
+func (c *Client) scanRelayGroup(ctx context.Context, relays []relay.Relay, probeTimeout time.Duration) (net.Conn, string, relayScanStats, error) {
+	// Randomization prevents every client from scanning a pool in the same order.
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	rng.Shuffle(len(relays), func(i, j int) {
 		relays[i], relays[j] = relays[j], relays[i]
 	})
-
-	c.log("info", fmt.Sprintf("Scanning %d relays for device %x...", len(relays), c.targetBytes[:4]))
 
 	type result struct {
 		conn     net.Conn
@@ -470,21 +526,28 @@ func (c *Client) scanAndConnect(ctx context.Context) (net.Conn, string, error) {
 	// FIX: Conservative tuning for First Attempt Success
 	// Concurrency: 50 (Low enough to prevent Router/OS table exhaustion)
 	// Pacing: 20ms (Prevents SYN flood detection)
-	// Timeout: 2.5s (Sufficient for global latency)
+	// Timeout: 2.5s for preferred relays, widened for the degraded fallback.
 	concurrency := 50
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
+	pacer := time.NewTicker(20 * time.Millisecond)
+	defer pacer.Stop()
 
-	for _, r := range relays {
+scanLoop:
+	for i, r := range relays {
 		if atomic.LoadInt32(&found) != 0 {
 			break
 		}
 
+		if i > 0 {
+			select {
+			case <-pacer.C:
+			case <-scanCtx.Done():
+				break scanLoop
+			}
+		}
+
 		wg.Add(1)
-
-		// Pacer: 20ms
-		time.Sleep(20 * time.Millisecond)
-
 		go func(r relay.Relay) {
 			defer wg.Done()
 
@@ -499,8 +562,7 @@ func (c *Client) scanAndConnect(ctx context.Context) (net.Conn, string, error) {
 				return
 			}
 
-			// Dial Timeout: 2.5s
-			probeCtx, cancel := context.WithTimeout(scanCtx, 2500*time.Millisecond)
+			probeCtx, cancel := context.WithTimeout(scanCtx, probeTimeout)
 			defer cancel()
 
 			conn, err := c.tryRelayAndConnect(probeCtx, r)
@@ -540,20 +602,32 @@ func (c *Client) scanAndConnect(ctx context.Context) (net.Conn, string, error) {
 	select {
 	case res, ok := <-results:
 		if !ok {
-			// SCAN FAILED - Log detailed diagnostics
-			c.log("warn", fmt.Sprintf("Scan Stats | Dial/Net Fail: %d | Not Found: %d | TLS/Other: %d",
-				atomic.LoadInt32(&errCountDial),
-				atomic.LoadInt32(&errCountNotFound),
-				atomic.LoadInt32(&errCountTLS)+atomic.LoadInt32(&errCountOther)))
-
-			return nil, "", errors.New("target device not found on any relay")
+			return nil, "", relayScanStats{
+				dial:     atomic.LoadInt32(&errCountDial),
+				tls:      atomic.LoadInt32(&errCountTLS),
+				notFound: atomic.LoadInt32(&errCountNotFound),
+				other:    atomic.LoadInt32(&errCountOther),
+			}, errors.New("target device not found in relay group")
 		}
-		u, _ := url.Parse(res.relayURI)
-		c.log("ok", fmt.Sprintf("Found device on relay: %s", u.Host))
-		return res.conn, res.relayURI, nil
+		return res.conn, res.relayURI, relayScanStats{}, nil
 	case <-ctx.Done():
-		return nil, "", ctx.Err()
+		return nil, "", relayScanStats{}, ctx.Err()
 	}
+}
+
+func (c *Client) reportFoundRelay(conn net.Conn, relayURI string, degraded bool) (net.Conn, string, error) {
+	u, _ := url.Parse(relayURI)
+	c.log("ok", fmt.Sprintf("Found device on relay: %s", u.Host))
+	if degraded {
+		reason := "advertised capacity or load"
+		if parsed, err := relay.ParseURL(relayURI); err == nil {
+			if parsedReason := parsed.DegradedReason(); parsedReason != "" {
+				reason = parsedReason
+			}
+		}
+		c.log("warn", fmt.Sprintf("Using degraded relay as last resort: %s", reason))
+	}
+	return conn, relayURI, nil
 }
 
 func (c *Client) tryRelayAndConnect(ctx context.Context, r relay.Relay) (net.Conn, error) {

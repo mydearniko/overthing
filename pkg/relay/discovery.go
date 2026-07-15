@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -68,6 +69,16 @@ const (
 	AdaptiveMinRelays         = 10
 	AdaptiveMaxRetries        = 3
 	AdaptiveTimeoutMultiplier = 2
+
+	// MinimumPreferredRelayBandwidth is the lowest advertised bandwidth cap
+	// that is considered suitable for normal tunnel traffic. Relays below this
+	// threshold remain available as a last resort.
+	MinimumPreferredRelayBandwidth int64 = 1024 * 1024
+
+	// RelaySaturationPercent is the advertised global-cap utilization at which
+	// a relay is treated as degraded. The discovery endpoint reports load in
+	// kilobits per second and relay caps in bytes per second.
+	RelaySaturationPercent int64 = 90
 )
 
 // Dialer is a function that matches net.Dialer.DialContext
@@ -75,13 +86,17 @@ type Dialer func(ctx context.Context, network, address string) (net.Conn, error)
 
 // Relay represents a Syncthing relay server
 type Relay struct {
-	URL      string        `json:"url"`
-	ID       string        `json:"id"`
-	Host     string        `json:"host"`
-	Port     string        `json:"port"`
-	Latency  time.Duration `json:"latency_ns"`
-	Jitter   time.Duration `json:"jitter_ns,omitempty"`
-	Provider string        `json:"provider,omitempty"`
+	URL             string        `json:"url"`
+	ID              string        `json:"id"`
+	Host            string        `json:"host"`
+	Port            string        `json:"port"`
+	Latency         time.Duration `json:"latency_ns"`
+	Jitter          time.Duration `json:"jitter_ns,omitempty"`
+	Provider        string        `json:"provider,omitempty"`
+	GlobalLimitBps  int64         `json:"global_limit_bps,omitempty"`
+	SessionLimitBps int64         `json:"session_limit_bps,omitempty"`
+	LoadKbps        int64         `json:"load_kbps,omitempty"`
+	ActiveSessions  int64         `json:"active_sessions,omitempty"`
 }
 
 // LatencyMS returns latency in milliseconds
@@ -94,6 +109,44 @@ func (r *Relay) LatencyMS() float64 {
 // With a single probe (Jitter=0), Score equals Latency.
 func (r *Relay) Score() time.Duration {
 	return r.Latency + r.Jitter*2
+}
+
+// DegradedReason explains why a relay should only be used as a last resort.
+// An empty result means the relay belongs to the preferred pool.
+func (r Relay) DegradedReason() string {
+	if r.GlobalLimitBps > 0 && r.GlobalLimitBps < MinimumPreferredRelayBandwidth {
+		return fmt.Sprintf("low global bandwidth cap (%d bytes/s)", r.GlobalLimitBps)
+	}
+
+	if r.SessionLimitBps > 0 && r.SessionLimitBps < MinimumPreferredRelayBandwidth {
+		return fmt.Sprintf("low per-session bandwidth cap (%d bytes/s)", r.SessionLimitBps)
+	}
+
+	if r.GlobalLimitBps > 0 && r.LoadKbps > 0 {
+		capacityKbps := r.GlobalLimitBps * 8 / 1000
+		if capacityKbps > 0 && r.LoadKbps*100 >= capacityKbps*RelaySaturationPercent {
+			return fmt.Sprintf("global bandwidth cap is saturated (%d/%d kbit/s)", r.LoadKbps, capacityKbps)
+		}
+	}
+
+	return ""
+}
+
+// PartitionByQuality splits relays into a preferred pool and a degraded
+// last-resort pool while preserving their input order.
+func PartitionByQuality(relays []Relay) (preferred, degraded []Relay) {
+	preferred = make([]Relay, 0, len(relays))
+	degraded = make([]Relay, 0)
+
+	for _, r := range relays {
+		if r.DegradedReason() == "" {
+			preferred = append(preferred, r)
+		} else {
+			degraded = append(degraded, r)
+		}
+	}
+
+	return preferred, degraded
 }
 
 // Options configures the relay discovery process
@@ -147,6 +200,14 @@ type Options struct {
 
 	// OnFetchComplete is called when relay list is fetched with the count
 	OnFetchComplete func(count int)
+
+	// OnRelaysClassified is called after advertised capacity and load metadata
+	// split the relay list into preferred and last-resort pools.
+	OnRelaysClassified func(preferred, degraded int)
+
+	// OnDegradedFallback is called when no preferred relay can be used and
+	// discovery starts testing degraded relays as a last resort.
+	OnDegradedFallback func(count int)
 
 	// OnTestStart is called when testing begins with total relay count
 	OnTestStart func(total int)
@@ -425,11 +486,23 @@ func discoveryAttemptTimeout(ctx context.Context, remainingEndpoints int) time.D
 	return timeout
 }
 
+type discoveryRelayEntry struct {
+	URL   string               `json:"url"`
+	Stats *discoveryRelayStats `json:"stats"`
+}
+
+type discoveryRelayStats struct {
+	ActiveSessions int64   `json:"numActiveSessions"`
+	LoadKbps       []int64 `json:"kbps10s1m5m15m30m60m"`
+	Options        struct {
+		GlobalLimitBps  int64 `json:"global-rate"`
+		SessionLimitBps int64 `json:"per-session-rate"`
+	} `json:"options"`
+}
+
 func decodeRelays(r io.Reader) ([]Relay, error) {
 	// The endpoint returns: { "key": [ {url: "..."}, ... ], ... }
-	var data map[string][]struct {
-		URL string `json:"url"`
-	}
+	var data map[string][]discoveryRelayEntry
 
 	if err := json.NewDecoder(r).Decode(&data); err != nil {
 		return nil, err
@@ -448,6 +521,23 @@ func decodeRelays(r io.Reader) ([]Relay, error) {
 			relay, err := ParseURL(entry.URL)
 			if err != nil {
 				continue
+			}
+
+			if entry.Stats != nil {
+				relay.ActiveSessions = entry.Stats.ActiveSessions
+				if relay.GlobalLimitBps == 0 {
+					relay.GlobalLimitBps = entry.Stats.Options.GlobalLimitBps
+				}
+				if relay.SessionLimitBps == 0 {
+					relay.SessionLimitBps = entry.Stats.Options.SessionLimitBps
+				}
+
+				// Prefer the one-minute value over the noisier ten-second value.
+				if len(entry.Stats.LoadKbps) > 1 {
+					relay.LoadKbps = entry.Stats.LoadKbps[1]
+				} else if len(entry.Stats.LoadKbps) == 1 {
+					relay.LoadKbps = entry.Stats.LoadKbps[0]
+				}
 			}
 			relays = append(relays, *relay)
 		}
@@ -478,14 +568,26 @@ func ParseURL(rawURL string) (*Relay, error) {
 	}
 
 	provider := u.Query().Get("providedBy")
+	globalLimitBps := parseRateLimit(u.Query().Get("globalLimitBps"))
+	sessionLimitBps := parseRateLimit(u.Query().Get("sessionLimitBps"))
 
 	return &Relay{
-		URL:      rawURL,
-		ID:       security.NormalizeID(id),
-		Host:     host,
-		Port:     port,
-		Provider: provider,
+		URL:             rawURL,
+		ID:              security.NormalizeID(id),
+		Host:            host,
+		Port:            port,
+		Provider:        provider,
+		GlobalLimitBps:  globalLimitBps,
+		SessionLimitBps: sessionLimitBps,
 	}, nil
+}
+
+func parseRateLimit(value string) int64 {
+	limit, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || limit <= 0 {
+		return 0
+	}
+	return limit
 }
 
 // tcpProbe performs a quick TCP connect to measure reachability and RTT.
@@ -764,8 +866,9 @@ func FindFastest(ctx context.Context, opts *Options) (*Relay, error) {
 		return nil, err
 	}
 
-	// Update cache (only if default dialer)
-	if opts == nil || opts.Dialer == nil {
+	// Update cache only for preferred relays. A last-resort result should be
+	// reconsidered on the next call instead of remaining sticky for five minutes.
+	if (opts == nil || opts.Dialer == nil) && results[0].DegradedReason() == "" {
 		cachedRelayMu.Lock()
 		cachedRelay = &results[0]
 		cachedRelayTime = time.Now()
@@ -795,7 +898,45 @@ func FindFastestN(ctx context.Context, n int, opts *Options) ([]Relay, error) {
 		opts.OnFetchComplete(len(relays))
 	}
 
-	return TestAllAndSort(ctx, relays, n, opts)
+	preferred, degraded := PartitionByQuality(relays)
+	if opts.OnRelaysClassified != nil {
+		opts.OnRelaysClassified(len(preferred), len(degraded))
+	}
+
+	var preferredErr error
+	if len(preferred) > 0 {
+		results, err := TestAllAndSort(ctx, preferred, n, opts)
+		if err == nil {
+			return results, nil
+		}
+		preferredErr = err
+		if ctx.Err() != nil {
+			return nil, err
+		}
+	}
+
+	if len(degraded) > 0 {
+		if opts.OnDegradedFallback != nil {
+			opts.OnDegradedFallback(len(degraded))
+		}
+
+		results, err := TestAllAndSort(ctx, degraded, n, opts)
+		if err == nil {
+			return results, nil
+		}
+		if preferredErr != nil {
+			return nil, fmt.Errorf("relay testing failed: %w", errors.Join(
+				fmt.Errorf("preferred relays: %w", preferredErr),
+				fmt.Errorf("degraded fallback relays: %w", err),
+			))
+		}
+		return nil, err
+	}
+
+	if preferredErr != nil {
+		return nil, preferredErr
+	}
+	return nil, fmt.Errorf("no relays to test after quality classification")
 }
 
 // TestAllAndSort tests all provided relays and returns up to n fastest ones.

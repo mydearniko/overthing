@@ -83,6 +83,14 @@ func discoverRelay(ctx context.Context, logger func(level, msg string), dialer f
 		opts.OnFetchComplete = func(count int) {
 			logger("info", fmt.Sprintf("Found %d relays, testing for fastest...", count))
 		}
+		opts.OnRelaysClassified = func(preferred, degraded int) {
+			if degraded > 0 {
+				logger("info", fmt.Sprintf("Avoiding %d low-capacity or saturated relays (%d preferred)", degraded, preferred))
+			}
+		}
+		opts.OnDegradedFallback = func(count int) {
+			logger("warn", fmt.Sprintf("No preferred relay is reachable; trying %d degraded relays as a last resort", count))
+		}
 	}
 
 	results, err := relay.FindFastestN(ctx, 5, &opts)
