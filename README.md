@@ -202,3 +202,41 @@ client := tunnel.NewClient(tunnel.ClientConfig{
 serverConn, clientConn := net.Pipe()
 // Use serverConn in TargetDialer, clientConn for testing
 ```
+
+## Docker
+
+The CI workflow publishes `ghcr.io/mydearniko/overthing:latest` for both Linux
+AMD64 and ARM64. To build it locally instead:
+
+```bash
+docker build -t overthing .
+```
+
+Run a server and persist its identity in a named volume:
+
+```bash
+docker volume create overthing-data
+
+docker run --rm \
+  --add-host host.docker.internal:host-gateway \
+  -v overthing-data:/data \
+  ghcr.io/mydearniko/overthing:latest \
+  server -identity /data/server.key -forward host.docker.internal:22
+```
+
+When the forwarded service is another container, put both containers on the
+same Docker network and use that container's DNS name instead of
+`host.docker.internal`.
+
+Run a client and expose its local tunnel only on the host loopback interface:
+
+```bash
+docker run --rm \
+  -p 127.0.0.1:2222:2222 \
+  ghcr.io/mydearniko/overthing:latest \
+  client -target DEVICE_ID -listen 0.0.0.0:2222
+```
+
+The image runs as UID/GID `65532`. Make any bind-mounted identity directory
+writable by that user; Docker named volumes initialized from `/data` already
+have the correct ownership.

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"syscall"
 
 	tunnel "github.com/mydearniko/overthing"
 	"github.com/mydearniko/overthing/pkg/logging"
@@ -49,7 +50,7 @@ func runServer(args []string) {
 		os.Exit(1)
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	identity, err := tunnel.LoadOrGenerateIdentity(*identityFile)
@@ -108,7 +109,7 @@ func runClient(args []string) {
 		}
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	var identity tunnel.Identity
