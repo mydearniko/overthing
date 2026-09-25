@@ -4,6 +4,8 @@ import (
 	"context"
 	"net"
 	"time"
+
+	"github.com/mydearniko/overthing/pkg/relay"
 )
 
 // DialerFunc represents a function that can dial a network connection.
@@ -30,6 +32,10 @@ type ServerConfig struct {
 	// Format: relay://host:port/?id=DEVICE-ID
 	// If empty, automatically discovers and uses the fastest available relay.
 	RelayURI string
+
+	// RelayFilter is an optional filter function applied during relay auto-discovery.
+	// If provided, only relays that satisfy the predicate are considered.
+	RelayFilter func(relay.Relay) bool
 
 	// Dialer is an optional custom dialer for outgoing connections to the relay.
 	// Use this to bind to a specific network interface or route traffic through a proxy.
@@ -93,6 +99,10 @@ type ClientConfig struct {
 	// If empty and TargetID contains a hint, uses the hinted relay.
 	// If empty and no hint, automatically discovers relays.
 	RelayURI string
+
+	// RelayFilter is an optional filter function applied during relay auto-discovery.
+	// If provided, only relays that satisfy the predicate are considered.
+	RelayFilter func(relay.Relay) bool
 
 	// Dialer is an optional custom dialer for outgoing connections to the relay.
 	// Use this to bind to a specific network interface or route traffic through a proxy.

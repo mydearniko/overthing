@@ -155,6 +155,9 @@ type Options struct {
 	// Used for both discovery (HTTP) and latency testing.
 	Dialer Dialer
 
+	// Filter is an optional callback to filter candidate relays prior to testing.
+	// If specified, only relays for which Filter returns true are considered.
+	Filter func(Relay) bool
 	// MaxConcurrent is the maximum number of concurrent latency tests
 	MaxConcurrent int
 
@@ -892,6 +895,15 @@ func FindFastestN(ctx context.Context, n int, opts *Options) ([]Relay, error) {
 	relays, err := Discover(ctx, opts.Dialer)
 	if err != nil {
 		return nil, err
+	}
+	if opts.Filter != nil {
+		filtered := make([]Relay, 0, len(relays))
+		for _, r := range relays {
+			if opts.Filter(r) {
+				filtered = append(filtered, r)
+			}
+		}
+		relays = filtered
 	}
 
 	if opts.OnFetchComplete != nil {

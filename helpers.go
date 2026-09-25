@@ -72,9 +72,10 @@ func defaultYamuxConfig() *yamux.Config {
 	return cfg
 }
 
-func discoverRelay(ctx context.Context, logger func(level, msg string), dialer func(context.Context, string, string) (net.Conn, error), ignore map[string]bool) (string, error) {
+func discoverRelay(ctx context.Context, logger func(level, msg string), dialer func(context.Context, string, string) (net.Conn, error), filter func(relay.Relay) bool, ignore map[string]bool) (string, error) {
 	opts := relay.FastOptions()
 	opts.Dialer = dialer
+	opts.Filter = filter
 
 	if logger != nil {
 		opts.OnFetchStart = func() {
@@ -132,7 +133,7 @@ func DialContext(ctx context.Context, config ClientConfig) (net.Conn, error) {
 	config.setDefaults()
 
 	if config.RelayURI == "" {
-		uri, err := discoverRelay(ctx, config.Logger, config.Dialer, nil)
+		uri, err := discoverRelay(ctx, config.Logger, config.Dialer, config.RelayFilter, nil)
 		if err != nil {
 			return nil, err
 		}

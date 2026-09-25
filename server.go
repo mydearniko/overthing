@@ -76,7 +76,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}()
 
 	if s.config.RelayURI == "" {
-		uri, err := discoverRelay(ctx, s.config.Logger, s.config.Dialer, nil)
+		uri, err := discoverRelay(ctx, s.config.Logger, s.config.Dialer, s.config.RelayFilter, nil)
 		if err != nil {
 			return err
 		}
