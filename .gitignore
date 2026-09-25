@@ -4,13 +4,13 @@ tunnel
 *.dll
 *.so
 *.dylib
-Test binary
+# Test binary
 *.test
-Coverage
+# Coverage
 *.out
 *.prof
 vendor/
-IDE
+# IDE
 .idea/
 .vscode/
 *.swp
@@ -18,10 +18,13 @@ IDE
 *~
 *.key
 .tunnel-key
-OS files
+# OS files
 .DS_Store
 Thumbs.db
 output_*.md
 output.md
 watch.sh
 apply.sh
+.env
+*.env
+*.pem
