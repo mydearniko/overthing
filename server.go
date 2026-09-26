@@ -75,6 +75,14 @@ func (s *Server) Run(ctx context.Context) error {
 		s.mu.Unlock()
 	}()
 
+	if s.config.RelayURI == "" && s.config.ShortlistURL != "" {
+		uri, err := discoverRelayFromShortlist(ctx, s.config.ShortlistURL, s.config.Logger, s.config.Dialer, s.config.RelayFilter)
+		if err != nil {
+			s.log("warn", fmt.Sprintf("Shortlist discovery failed (%v); falling back to full pool", err))
+		} else {
+			s.config.RelayURI = uri
+		}
+	}
 	if s.config.RelayURI == "" {
 		uri, err := discoverRelay(ctx, s.config.Logger, s.config.Dialer, s.config.RelayFilter, nil)
 		if err != nil {
@@ -82,7 +90,6 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		s.config.RelayURI = uri
 	}
-
 	// Resolve the relay address once at startup to avoid DNS in the hot path
 	relayAddr, relayID, err := parseRelayURI(s.config.RelayURI)
 	if err != nil {

@@ -70,6 +70,12 @@ func (v *VLESSDialer) DialContext(ctx context.Context, network, addr string) (ne
 	if err != nil {
 		return nil, fmt.Errorf("vless: dial server: %w", err)
 	}
+	// Disable Nagle on the raw TCP socket NOW: after the TLS wraps, callers
+	// can no longer reach *net.TCPConn (OptimizeConn type-asserts and bails),
+	// and Nagle adds tens of ms to every small frame (relay pings, VLESS head).
+	if tcp, ok := conn.(*net.TCPConn); ok {
+		_ = tcp.SetNoDelay(true)
+	}
 
 	tlsConn, err := v.realityHandshake(dialCtx, conn)
 	if err != nil {

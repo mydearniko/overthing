@@ -63,6 +63,12 @@ type ServerConfig struct {
 	// standard WebSocket to the front host. Format: wss://bridge.example
 	FrontURL string
 
+	// ShortlistURL, when set and RelayURI is empty, fetches a small
+	// server-maintained list of healthy relays (one relay:// URI per line)
+	// and probes only those instead of the full public pool. The list is
+	// expected to be refreshed server-side; relays churn constantly.
+	ShortlistURL string
+
 	// AllowedClientIDs is a list of Client Device IDs allowed to connect.
 	// If this list is empty, the server allows ALL connections by default.
 	// To restrict access, you must populate this list.
