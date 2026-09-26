@@ -57,6 +57,12 @@ type ServerConfig struct {
 	// size distribution so it no longer looks like a tiny-frame heartbeat.
 	KeepalivePadding int
 
+	// FrontURL, when set, routes the relay connection through an HTTPS
+	// WebSocket front (e.g. a Cloudflare Worker bridge). The relay TLS
+	// session is established INSIDE the tunnel, so egress observers see a
+	// standard WebSocket to the front host. Format: wss://bridge.example
+	FrontURL string
+
 	// AllowedClientIDs is a list of Client Device IDs allowed to connect.
 	// If this list is empty, the server allows ALL connections by default.
 	// To restrict access, you must populate this list.

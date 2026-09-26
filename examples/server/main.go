@@ -19,11 +19,11 @@ import (
 )
 
 var (
-	activeClients   int64
-	totalClients    int64
-	totalStreams    int64
-	startTime       time.Time
-	lastClientTime  time.Time
+	activeClients  int64
+	totalClients   int64
+	totalStreams   int64
+	startTime      time.Time
+	lastClientTime time.Time
 )
 
 func main() {
@@ -246,7 +246,7 @@ func statsReporter(ctx context.Context, interval time.Duration) {
 			active := atomic.LoadInt64(&activeClients)
 			total := atomic.LoadInt64(&totalClients)
 			uptime := time.Since(startTime).Round(time.Second)
-			
+
 			var lastSeen string
 			if !lastClientTime.IsZero() {
 				lastSeen = time.Since(lastClientTime).Round(time.Second).String() + " ago"

@@ -55,7 +55,7 @@ OPTIONS:
 
 	// Create ephemeral identity
 	identity := tunnel.GenerateIdentity()
-	
+
 	fmt.Println()
 	fmt.Println("TUNNEL DIAL")
 	fmt.Println("───────────────────────────────────────────────")
@@ -107,10 +107,10 @@ OPTIONS:
 	// Read response
 	fmt.Println()
 	fmt.Println("← Reading response...")
-	
+
 	buf := make([]byte, 4096)
 	conn.SetReadDeadline(time.Now().Add(*readTimeout))
-	
+
 	totalRead := 0
 	for {
 		n, err := conn.Read(buf)

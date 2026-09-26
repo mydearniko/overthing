@@ -62,7 +62,7 @@ func demonstrateDirectPipe() {
 
 	// Client sends and receives
 	client.Write([]byte("Hello from client!"))
-	
+
 	buf := make([]byte, 1024)
 	n, _ := client.Read(buf)
 	fmt.Printf("  Client received: %q\n", buf[:n])
@@ -148,7 +148,7 @@ func demonstrateCustomListener() {
 	defer conn.Close()
 
 	conn.Write([]byte("Testing custom listener"))
-	
+
 	buf := make([]byte, 1024)
 	n, _ := conn.Read(buf)
 	fmt.Printf("  Dialer received: %q\n", buf[:n])

@@ -177,7 +177,7 @@ func runDemoServer(bindIP string) {
 			log.Fatalf("Invalid IP: %s", bindIP)
 		}
 		fmt.Printf("Binding outgoing relay connections to: %s\n", ip)
-		
+
 		d := &net.Dialer{
 			LocalAddr: &net.TCPAddr{IP: ip},
 			Timeout:   10 * time.Second,

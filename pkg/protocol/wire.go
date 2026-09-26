@@ -25,7 +25,7 @@ var (
 			return &b
 		},
 	}
-	
+
 	largeMsgPool = sync.Pool{
 		New: func() interface{} {
 			b := make([]byte, MaxMessageSize)
@@ -67,7 +67,7 @@ func WriteMessage(w io.Writer, msgType int32, payload []byte) error {
 	if nc, ok := w.(net.Conn); ok {
 		headerPtr := headerPool.Get().(*[]byte)
 		header := *headerPtr
-		
+
 		binary.BigEndian.PutUint32(header[0:4], RelayMagic)
 		binary.BigEndian.PutUint32(header[4:8], uint32(msgType))
 		binary.BigEndian.PutUint32(header[8:12], uint32(len(payload)))
@@ -94,7 +94,7 @@ func WriteMessage(w io.Writer, msgType int32, payload []byte) error {
 		return err
 	}
 	headerPool.Put(headerPtr)
-	
+
 	if len(payload) > 0 {
 		_, err := w.Write(payload)
 		return err
@@ -119,7 +119,7 @@ func ReadMessage(r io.Reader) (int32, []byte, error) {
 
 	msgType := int32(binary.BigEndian.Uint32(header[4:8]))
 	length := binary.BigEndian.Uint32(header[8:12])
-	
+
 	// Done with header buffer
 	headerPool.Put(headerPtr)
 

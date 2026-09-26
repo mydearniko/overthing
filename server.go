@@ -269,6 +269,27 @@ func (s *Server) connectToRelay(ctx context.Context) (*tls.Conn, error) {
 	var conn net.Conn
 	var err error
 
+	if s.config.FrontURL != "" {
+		// Tunnel mode: carry the relay TLS session inside an ordinary
+		// HTTPS WebSocket to the front endpoint. The inner handshake below
+		// is unchanged; only the transport differs.
+		fd := &TunnelDialer{
+			FrontURL: s.config.FrontURL,
+			Inner: func(ctx context.Context, netw, addr string) (net.Conn, error) {
+				if s.config.Dialer != nil {
+					return s.config.Dialer(ctx, netw, addr)
+				}
+				return network.NewDialer(10*time.Second).DialContext(ctx, netw, addr)
+			},
+		}
+		conn, err = fd.DialContext(ctx, "tcp", s.relayAddr)
+		if err != nil {
+			return nil, err
+		}
+		network.OptimizeConn(conn)
+		return tls.Client(conn, s.tlsConfig), nil
+	}
+
 	// Use pre-resolved s.relayAddr
 	if s.config.Dialer != nil {
 		conn, err = s.config.Dialer(ctx, "tcp", s.relayAddr)
