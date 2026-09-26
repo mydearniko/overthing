@@ -112,6 +112,11 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 
 		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				s.log("info", fmt.Sprintf("Session lifetime (%v) reached; rejoining", s.config.SessionLifetime))
+				time.Sleep(s.config.ReconnectDelay)
+				continue
+			}
 			s.log("error", fmt.Sprintf("Session error: %v", err))
 			time.Sleep(s.config.ReconnectDelay)
 		}
@@ -135,6 +140,12 @@ func (s *Server) RelayURI() string {
 }
 
 func (s *Server) runSession(ctx context.Context) error {
+	if s.config.SessionLifetime > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.config.SessionLifetime)
+		defer cancel()
+	}
+
 	relayConn, err := s.connectToRelay(ctx)
 	if err != nil {
 		return err
@@ -173,6 +184,11 @@ func (s *Server) runSession(ctx context.Context) error {
 		relayConn.SetReadDeadline(time.Now().Add(90 * time.Second))
 		msgType, body, err := protocol.ReadMessage(relayConn)
 		if err != nil {
+			// Lifetime expiry closes the conn from the watchdog goroutine;
+			// surface it as DeadlineExceeded so the caller rejoins quietly.
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return fmt.Errorf("relay read: %w", err)
 		}
 		s.log("info", fmt.Sprintf("[DEBUG-WIRE] relayConn received msgType=%d (len=%d)", msgType, len(body)))

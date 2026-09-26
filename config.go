@@ -46,6 +46,12 @@ type ServerConfig struct {
 	// Default: 500ms
 	ReconnectDelay time.Duration
 
+	// SessionLifetime, when > 0, caps how long a single relay session may
+	// live. After the lifetime elapses the session is closed and rejoin is
+	// attempted after ReconnectDelay. Zero (default) keeps the session until
+	// an error occurs.
+	SessionLifetime time.Duration
+
 	// AllowedClientIDs is a list of Client Device IDs allowed to connect.
 	// If this list is empty, the server allows ALL connections by default.
 	// To restrict access, you must populate this list.
