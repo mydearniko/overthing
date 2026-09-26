@@ -175,7 +175,7 @@ func (s *Server) runSession(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("relay read: %w", err)
 		}
-
+		s.log("info", fmt.Sprintf("[DEBUG-WIRE] relayConn received msgType=%d (len=%d)", msgType, len(body)))
 		switch msgType {
 		case protocol.MsgPing:
 			s.log("info", "Received MsgPing from relay, sending MsgPong")
@@ -264,13 +264,13 @@ func (s *Server) connectToRelay(ctx context.Context) (*tls.Conn, error) {
 		tlsConn.Close()
 		return nil, errors.New("relay ID mismatch")
 	}
-
+	s.log("info", "[DEBUG-WIRE] Before sending MsgJoinRelayRequest")
 	joinPayload := make([]byte, 4)
 	if err := protocol.WriteMessage(tlsConn, protocol.MsgJoinRelayRequest, joinPayload); err != nil {
 		tlsConn.Close()
 		return nil, fmt.Errorf("join request failed: %w", err)
 	}
-
+	s.log("info", "[DEBUG-WIRE] After sending MsgJoinRelayRequest, waiting for response")
 	msgType, body, err := protocol.ReadMessage(tlsConn)
 	if err != nil {
 		tlsConn.Close()
