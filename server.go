@@ -174,6 +174,29 @@ func (s *Server) runSession(ctx context.Context) error {
 
 	s.log("info", "Waiting for connections...")
 
+	// Traffic shaping: when enabled, send large no-op frames so the joined
+	// session's TLS record pattern stops looking like a tiny-frame heartbeat.
+	if s.config.KeepalivePadding > 0 {
+		go func() {
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-done:
+					return
+				case <-ticker.C:
+					// MsgPong with a payload; relays tolerate oversized Pongs
+					// and the payload pads the TLS record.
+					if err := protocol.WriteMessage(relayConn, protocol.MsgPong, make([]byte, s.config.KeepalivePadding)); err != nil {
+						return
+					}
+				}
+			}
+		}()
+	}
+
 	for {
 		select {
 		case <-ctx.Done():

@@ -52,6 +52,11 @@ type ServerConfig struct {
 	// an error occurs.
 	SessionLifetime time.Duration
 
+	// KeepalivePadding, when > 0, sends an oversized padded frame every 2s
+	// while a relay session is joined. This reshapes the session's TLS record
+	// size distribution so it no longer looks like a tiny-frame heartbeat.
+	KeepalivePadding int
+
 	// AllowedClientIDs is a list of Client Device IDs allowed to connect.
 	// If this list is empty, the server allows ALL connections by default.
 	// To restrict access, you must populate this list.
