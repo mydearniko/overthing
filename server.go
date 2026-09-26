@@ -178,8 +178,8 @@ func (s *Server) runSession(ctx context.Context) error {
 
 		switch msgType {
 		case protocol.MsgPing:
+			s.log("info", "Received MsgPing from relay, sending MsgPong")
 			protocol.WriteMessage(relayConn, protocol.MsgPong, nil)
-
 		case protocol.MsgSessionInvitation:
 			inv, err := protocol.DecodeInvitation(body)
 			if err != nil {
